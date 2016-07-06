@@ -23,6 +23,15 @@
 #define FILE_NOT_FOUND 404
 #define FILE_FORBIDEN 403
 
+struct sendFileArgs{
+    int fd;
+    int clientIndex;
+    char * rootcwd;
+    char * uri_buf;
+    char * fileType;
+    long long filesize;
+};
+
 void get_URI(char * recv_buf, char * uri_buf);
 void url_decode(char *pURL);
 int get_URI_STATUS(char * uri_buf, char * rootcwd, char * currentcwd);
@@ -31,5 +40,6 @@ long send_file(int fd, char * rootcwd, char * uri_buf, char * fileType);
 int display_error(int fd, int error_no, char * uri_buf);
 void waitingForClientSelectMax(int listenfd);
 void waitingForClientSelectSimple(int listenfd);
+void * threadSendFile(void * arg);
 
 #endif

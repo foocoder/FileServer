@@ -3,7 +3,7 @@ cc = gcc
 CFLAGS +=
 
 web_server:$(obj)
-	$(cc) $(CFLAGS) -o web_server $(obj)
+	$(cc) $(CFLAGS) -o web_server $(obj) -lpthread
 
 server_options.o : server_options.h server_options.c
 	$(cc) $(CFLAGS) -c server_options.c

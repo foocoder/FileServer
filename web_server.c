@@ -35,7 +35,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <arpa/inet.h>
-/*#include <pthread.h>*/
+#include <pthread.h>
 #include "server_options.h"
 #include "web_server.h"
 
@@ -233,6 +233,8 @@ int display_error(int fd, int error_no, char * uri_buf)
     return 0;
 }
 
+static fd_set allset;
+static int client[FD_SETSIZE];
 
 int main(int argc, char * argv[])
 {
@@ -244,9 +246,8 @@ int main(int argc, char * argv[])
     int i, maxi, maxfd;
     char recv_buf[BUFFER_SIZE],send_buf[BUFFER_SIZE],uri_buf[BUFFER_SIZE];
     char rootcwd[MAX_LEN], fileType[MAX_LEN], currentcwd[MAX_LEN];
-    fd_set allset, rset;
+    fd_set rset;
     int res,uri_status;
-    void * thrd_ret;
 
     if (argc < 2)
     {
@@ -390,6 +391,7 @@ void waitingForClientSelectMax(int listenfd){
                                             get_fileType(uri_buf, fileType);
                                             if( 0 == fork() ) //fork 子进程处理send
                                             {
+                                                close(listenfd);
                                                 send_file(fd, rootcwd, uri_buf, fileType);
                                                 exit(0);
                                             }
@@ -442,6 +444,8 @@ void waitingForClientSelectSimple(int listenfd){
     char rootcwd[MAX_LEN], fileType[MAX_LEN], currentcwd[MAX_LEN];
     char recv_buf[BUFFER_SIZE],send_buf[BUFFER_SIZE],uri_buf[BUFFER_SIZE];
     int uri_status;
+    pthread_t tid;
+    struct sendFileArgs args;
 
     maxfd = listenfd;
     maxi  = -1;
@@ -526,11 +530,26 @@ void waitingForClientSelectSimple(int listenfd){
                         {
                             case FILE_OK:
                                 get_fileType(uri_buf, fileType);
-                                send_file(sockfd, rootcwd, uri_buf, fileType);
-                                close(sockfd);
-                                FD_CLR(sockfd, &allset);
-                                client[i] = -1;
+                                args.fd = sockfd;
+                                args.clientIndex = i;
+                                args.rootcwd = rootcwd;
+                                args.uri_buf = uri_buf;
+                                args.fileType = fileType;
+                                pthread_create(&tid, NULL, threadSendFile, &args);
                                 break;
+
+                                //get_fileType(uri_buf, fileType);
+                                //if( 0 == fork() ) //fork 子进程处理send
+                                //{
+                                //    close(listenfd);
+                                //    send_file(sockfd, rootcwd, uri_buf, fileType);
+                                //    exit(0);
+                                //}
+                                //close(sockfd);
+                                //FD_CLR(sockfd, &allset);
+                                //client[i] = -1;
+                                //break;
+
                             case DIR_OK:
                              //   [>display_dir(sockfd, rootcwd, currentcwd, uri_buf);<]
                                 printDir(sockfd, rootcwd, uri_buf);
@@ -563,4 +582,83 @@ void waitingForClientSelectSimple(int listenfd){
                 break;
         }
     }
+}
+
+void * threadSendFile(void * args)
+{
+    //传输文件
+    int fd;
+    char * rootcwd, * uri_buf, * fileType;
+    char msg_head[BUFFER_SIZE], msg_body_buf[FILE_BUF_LEN];
+    char path[MAX_LEN], filename[MAX_LEN];
+    char *p;
+    struct stat statbuf;
+    long long filesize = -1;
+    int src_file, read_length;
+
+    struct sendFileArgs * pArgs  = (struct sendFileArgs *) args;
+
+    pthread_detach(pthread_self());
+
+    fd = pArgs->fd;
+    rootcwd = pArgs->rootcwd;
+    uri_buf = pArgs->uri_buf;
+    fileType = pArgs->fileType;
+    pArgs->filesize = filesize;
+
+    strcpy(path, rootcwd);
+    strcat(path, uri_buf);
+    if (stat(path, &statbuf) < 0)
+    {
+        return pArgs;
+    }
+    else
+    {
+        filesize = statbuf.st_size;
+    }
+
+    sprintf(msg_head, "HTTP/1.1 200 OK\r\n");
+    sprintf(msg_head, "%sServer: Web Server\r\n", msg_head);
+    sprintf(msg_head, "%sContent-Type:%s\r\n", msg_head, fileType);
+    sprintf(msg_head, "%sContent-Length:%ld\r\n", msg_head, filesize);
+    if (strstr(fileType, "application/octet-stream") || strstr(fileType, "text/plain"))
+    {
+        p = strtok(uri_buf, "/");
+        while (p)
+        {
+            strcpy(filename, p);
+            p = strtok(NULL, "/");
+        }
+        sprintf(msg_head, "%sContent-Disposition:attachment;filename=%s\r\n\r\n", msg_head, filename);
+    }
+    else
+        sprintf(msg_head, "%s\r\n", msg_head);
+
+    if (send(fd, msg_head, strlen(msg_head), 0) == -1)
+    {
+        perror("Error in send_file to Send Head!\n");
+        return pArgs;
+    }
+
+    if ((src_file = open(path, O_RDONLY)) < 0)
+    {
+        perror("Open file Error!\n");
+        return pArgs;
+    }
+
+    memset(msg_body_buf, 0, sizeof(msg_body_buf));
+    while((read_length = read(src_file, msg_body_buf, sizeof(msg_body_buf))) > 0)
+    {
+        if (send(fd, msg_body_buf, read_length, 0) == -1)
+        {
+            perror("Error in send_file to Send Body!\n");
+            return pArgs;
+        }
+    }
+    close(src_file);
+    pArgs->filesize = filesize;
+    close(fd);
+    FD_CLR(fd, &allset);
+    client[pArgs->clientIndex] = -1;
+    return pArgs;
 }
