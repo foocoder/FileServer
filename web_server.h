@@ -25,7 +25,6 @@
 
 struct sendFileArgs{
     int fd;
-    int clientIndex;
     char * rootcwd;
     char * uri_buf;
     char * fileType;

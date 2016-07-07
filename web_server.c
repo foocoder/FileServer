@@ -233,21 +233,10 @@ int display_error(int fd, int error_no, char * uri_buf)
     return 0;
 }
 
-static fd_set allset;
-static int client[FD_SETSIZE];
-
 int main(int argc, char * argv[])
 {
-    struct sockaddr_in server_sockaddr,client_sockaddr;
-    struct timeval timeout;
-    int sin_size,recvbytes;
-    int listenfd,clientfd,fd;
-    int nready, client[FD_SETSIZE];
-    int i, maxi, maxfd;
-    char recv_buf[BUFFER_SIZE],send_buf[BUFFER_SIZE],uri_buf[BUFFER_SIZE];
-    char rootcwd[MAX_LEN], fileType[MAX_LEN], currentcwd[MAX_LEN];
-    fd_set rset;
-    int res,uri_status;
+    struct sockaddr_in server_sockaddr;
+    int listenfd;
 
     if (argc < 2)
     {
@@ -531,24 +520,13 @@ void waitingForClientSelectSimple(int listenfd){
                             case FILE_OK:
                                 get_fileType(uri_buf, fileType);
                                 args.fd = sockfd;
-                                args.clientIndex = i;
                                 args.rootcwd = rootcwd;
                                 args.uri_buf = uri_buf;
                                 args.fileType = fileType;
                                 pthread_create(&tid, NULL, threadSendFile, &args);
+                                FD_CLR(sockfd, &allset);
+                                client[i] = -1;
                                 break;
-
-                                //get_fileType(uri_buf, fileType);
-                                //if( 0 == fork() ) //fork 子进程处理send
-                                //{
-                                //    close(listenfd);
-                                //    send_file(sockfd, rootcwd, uri_buf, fileType);
-                                //    exit(0);
-                                //}
-                                //close(sockfd);
-                                //FD_CLR(sockfd, &allset);
-                                //client[i] = -1;
-                                //break;
 
                             case DIR_OK:
                              //   [>display_dir(sockfd, rootcwd, currentcwd, uri_buf);<]
@@ -577,9 +555,9 @@ void waitingForClientSelectSimple(int listenfd){
                         }
                     }
                 }
+                if(--nready <=0)
+                    break;
             }
-            if(--nready <=0)
-                break;
         }
     }
 }
@@ -658,7 +636,5 @@ void * threadSendFile(void * args)
     close(src_file);
     pArgs->filesize = filesize;
     close(fd);
-    FD_CLR(fd, &allset);
-    client[pArgs->clientIndex] = -1;
     return pArgs;
 }
