@@ -1,6 +1,6 @@
 obj = server_options.o web_server.o
 cc = gcc
-CFLAGS +=
+override CFLAGS += 
 
 web_server:$(obj)
 	$(cc) $(CFLAGS) -o web_server $(obj) -lpthread

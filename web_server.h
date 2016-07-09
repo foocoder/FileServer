@@ -23,12 +23,29 @@
 #define FILE_NOT_FOUND 404
 #define FILE_FORBIDEN 403
 
+#define GET 0
+#define POST 1
+
+#define SEPCHARS " =\r\n"
+
 struct sendFileArgs{
     int fd;
     char * rootcwd;
     char * uri_buf;
     char * fileType;
     long long filesize;
+};
+
+struct RequestLine{
+    int method;
+    char * uri;
+    int version;
+};
+
+struct UploadFileInfo{
+    long contentLength;
+    char * contentType;
+    char * boundary;
 };
 
 void get_URI(char * recv_buf, char * uri_buf);
@@ -40,5 +57,7 @@ int display_error(int fd, int error_no, char * uri_buf);
 void waitingForClientSelectMax(int listenfd);
 void waitingForClientSelectSimple(int listenfd);
 void * threadSendFile(void * arg);
+struct RequestLine process_request_line(char * recv_buf);
+struct UploadFileInfo process_request_head();
 
 #endif

@@ -154,7 +154,10 @@ int printDir (int fd, char web_root[], char offset_dir[])
     //close dir
     closedir(dir);
     printf("路径\"%s\"下有%d个目录，%d个文件!\n", path, num_dir, num_reg);
-    sprintf(msg_txt, "%s<p>当前路径下有%d个目录，%d个文件!</p></body></html>",msg_txt,num_dir,num_reg);
+    sprintf(msg_txt, "%s<p>当前路径下有%d个目录，%d个文件!</p>",msg_txt,num_dir,num_reg);
+    sprintf(msg_txt, "%s<form enctype=\"multipart/form-data\" action=\"/\" method=post>\n", msg_txt);
+    sprintf(msg_txt, "%s<input name=\"uploadFile\" type=\"file\"><br> \n", msg_txt);
+    sprintf(msg_txt, "%s<input type=\"submit\" value=\"提交\"><input type=reset></form> </body></html>", msg_txt);
     sprintf(msg_head,"%sContent-Length:%d\r\n\r\n",msg_head,(int) strlen(msg_txt));
     if (send(fd, msg_head, strlen(msg_head), 0) == -1)
     {

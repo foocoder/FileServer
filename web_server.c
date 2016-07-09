@@ -39,11 +39,11 @@
 #include "server_options.h"
 #include "web_server.h"
 
-void get_URI(char * recv_buf, char * uri_buf)
+void get_URI(char * header_buf, char * uri_buf)
 {
     //解析消息中URI
     char * p;
-    p = strtok(recv_buf, " ");
+    p = strtok(header_buf, " ");
     p = strtok(NULL, " ");
     strcpy(uri_buf, p);
 }
@@ -297,7 +297,7 @@ void waitingForClientSelectMax(int listenfd){
     fd_set allset, rset;
     int sin_size,recvbytes;
     char rootcwd[MAX_LEN], fileType[MAX_LEN], currentcwd[MAX_LEN];
-    char recv_buf[BUFFER_SIZE],send_buf[BUFFER_SIZE],uri_buf[BUFFER_SIZE];
+    char header_buf[BUFFER_SIZE],send_buf[BUFFER_SIZE],uri_buf[BUFFER_SIZE];
     int res,uri_status;
 
     getcwd(rootcwd, MAX_LEN);
@@ -309,7 +309,7 @@ void waitingForClientSelectMax(int listenfd){
         getcwd(currentcwd, MAX_LEN);
         rset = allset;
         sin_size = sizeof(struct sockaddr_in);
-        memset(recv_buf, 0, sizeof(recv_buf));
+        memset(header_buf, 0, sizeof(header_buf));
 
 
         /*调用select*/
@@ -344,7 +344,7 @@ void waitingForClientSelectMax(int listenfd){
                         }
                         else //处理客户端消息 clientfd
                         {
-                            if ((recvbytes = recv(fd, &recv_buf, BUFFER_SIZE, 0)) <= 0) //客户端关闭链接
+                            if ((recvbytes = recv(fd, &header_buf, BUFFER_SIZE, 0)) <= 0) //客户端关闭链接
                             {
                                 close(fd);
                                 FD_CLR(fd, &allset);
@@ -353,8 +353,8 @@ void waitingForClientSelectMax(int listenfd){
                             else //客户端发送消息
                             {
                                 //[>打印请求报头<]
-                                printf("\nHTTP header;\n %s \n", recv_buf);
-                                if (!strstr(recv_buf, "HTTP/")) //非HTTP协议
+                                printf("\nHTTP header;\n%s \n", header_buf);
+                                if (!strstr(header_buf, "HTTP/")) //非HTTP协议
                                 {
                                     fprintf(stderr,"Not HTTP Protocol!\n");
                                     close(fd);
@@ -363,7 +363,7 @@ void waitingForClientSelectMax(int listenfd){
                                 }
                                 else
                                 {
-                                    get_URI(recv_buf, uri_buf);
+                                    get_URI(header_buf, uri_buf);
                                     url_decode(uri_buf);
                                     printf("uri_buf %s\n",uri_buf);
                                     if(!strcmp(uri_buf, "/favicon.ico")){
@@ -422,7 +422,7 @@ void waitingForClientSelectMax(int listenfd){
     }
 }
 
-//Using UNPv1 Select and fork
+//Using UNPv1 Select and thread
 void waitingForClientSelectSimple(int listenfd){
     struct sockaddr_in client_sockaddr;
     int fd, connfd;
@@ -431,7 +431,7 @@ void waitingForClientSelectSimple(int listenfd){
     int i, maxi, maxfd;
     int nready, client[FD_SETSIZE];
     char rootcwd[MAX_LEN], fileType[MAX_LEN], currentcwd[MAX_LEN];
-    char recv_buf[BUFFER_SIZE],send_buf[BUFFER_SIZE],uri_buf[BUFFER_SIZE];
+    char header_buf[BUFFER_SIZE],send_buf[BUFFER_SIZE],uri_buf[BUFFER_SIZE], cache_buf[BUFFER_SIZE];
     int uri_status;
     pthread_t tid;
     struct sendFileArgs args;
@@ -451,7 +451,7 @@ void waitingForClientSelectSimple(int listenfd){
         getcwd(currentcwd, MAX_LEN);
         rset = allset;
         sin_size = sizeof(struct sockaddr_in);
-        memset(recv_buf, 0, sizeof(recv_buf));
+        memset(header_buf, 0, sizeof(header_buf));
 
         /*调用select*/
         printf("Waiting Select...\n");
@@ -484,7 +484,7 @@ void waitingForClientSelectSimple(int listenfd){
                 continue;
             }
             if(FD_ISSET(sockfd, &rset)){
-                if((recvbytes = recv(sockfd, &recv_buf, BUFFER_SIZE, 0)) ==0){
+                if((recvbytes = recv(sockfd, &header_buf, BUFFER_SIZE, 0)) ==0){
                     close(sockfd);
                     FD_CLR(sockfd, &allset);
                     client[i] = -1;
@@ -492,67 +492,122 @@ void waitingForClientSelectSimple(int listenfd){
                 }
                 else
                 {
-                    printf("\nHTTP header:\n %s \n", recv_buf);
-                    if (!strstr(recv_buf, "HTTP/")) //非HTTP协议
-                    {
+                    printf("\nHTTP header:\n%s \n", header_buf);
+                    struct RequestLine reqHead = process_request_line(header_buf);
+
+                    // Process Non-HTTP Protocol
+                    if(reqHead.version == -1){
                         fprintf(stderr,"Not HTTP Protocol!\n");
                         close(sockfd);
                         FD_CLR(sockfd, &allset);
                         client[i] = -1;
                         exit(-1);
                     }
-                    else
+
+                    //HTTP Protocol
+                    /*get_URI(header_buf, uri_buf);*/
+                    strcpy( uri_buf, reqHead.uri );
+                    url_decode(uri_buf);
+                    printf("uri_buf %s\n",uri_buf);
+
+                    switch(reqHead.method)
                     {
-                        get_URI(recv_buf, uri_buf);
-                        url_decode(uri_buf);
-                        printf("uri_buf %s\n",uri_buf);
-                        if(!strcmp(uri_buf, "/favicon.ico")){
-                            ///*[>Server 主动关闭链接<]*/
-                            close(sockfd);
-                            FD_CLR(sockfd, &allset);
-                            client[i] = -1;
-                            continue;
-                        }
-                        uri_status = get_URI_STATUS(uri_buf, rootcwd, currentcwd);
-                        printf("Status:%d\n", uri_status);
-                        switch (uri_status)
-                        {
-                            case FILE_OK:
-                                get_fileType(uri_buf, fileType);
-                                args.fd = sockfd;
-                                args.rootcwd = rootcwd;
-                                args.uri_buf = uri_buf;
-                                args.fileType = fileType;
-                                pthread_create(&tid, NULL, threadSendFile, &args);
+                        case GET:
+                            //暂时不考虑 favicon.ico
+                            if(!strcmp(uri_buf, "/favicon.ico")){
+                                ///*[>Server 主动关闭链接<]*/
+                                close(sockfd);
                                 FD_CLR(sockfd, &allset);
                                 client[i] = -1;
-                                break;
+                                continue;
+                            }
 
-                            case DIR_OK:
-                             //   [>display_dir(sockfd, rootcwd, currentcwd, uri_buf);<]
+                            uri_status = get_URI_STATUS(uri_buf, rootcwd, currentcwd);
+                            printf("Status:%d\n", uri_status);
+                            switch (uri_status)
+                            {
+                                case FILE_OK:
+                                    {
+                                        get_fileType(uri_buf, fileType);
+                                        args.fd = sockfd;
+                                        args.rootcwd = rootcwd;
+                                        args.uri_buf = uri_buf;
+                                        args.fileType = fileType;
+                                        pthread_create(&tid, NULL, threadSendFile, &args);
+                                        FD_CLR(sockfd, &allset);
+                                        client[i] = -1;
+                                        break;
+                                    }
+
+                                case DIR_OK:
+                                    {
+                                        //   [>display_dir(sockfd, rootcwd, currentcwd, uri_buf);<]
+                                        printDir(sockfd, rootcwd, uri_buf);
+                                        close(sockfd);
+                                        FD_CLR(sockfd, &allset);
+                                        client[i] = -1;
+                                        break;
+                                    }
+                                case FILE_NOT_FOUND:
+                                    {
+                                        if ((deteleFiles(sockfd, rootcwd, uri_buf)  != 0)&&
+                                                (getRenameInfo(sockfd, rootcwd, uri_buf)!= 0))
+                                        {
+                                            printf("file no found\n");
+                                        }
+                                        close(sockfd);
+                                        FD_CLR(sockfd, &allset);
+                                        client[i] = -1;
+                                        break;
+                                    }
+                                case FILE_FORBIDEN:
+                                    {
+                                        close(sockfd);
+                                        FD_CLR(sockfd, &allset);
+                                        client[i] = -1;
+                                        break;
+                                    }
+                                default:
+                                    break;
+                            }
+
+                            break;
+                        case POST:
+                            {
+                                FILE * outfile;
+                                int totalBytes = 0;
+                                char endFlags[BUFFER_SIZE] = {'-','-'};
+                                memset(cache_buf, 0, sizeof(cache_buf));
+                                struct UploadFileInfo upFDInfo = process_request_head();
+
+                                outfile = fopen("./tmp", "w+b");
+
+                                //construct end flags
+                                strcat(endFlags, upFDInfo.boundary);
+                                strcat(endFlags, "--");
+
+                                printf("End Signal: %s \n", endFlags);
+
+                                while( (recvbytes = recv(sockfd, &cache_buf, BUFFER_SIZE, 0)) != 0
+                                        && (totalBytes += recvbytes) < upFDInfo.contentLength ){
+                                    printf("This Segment size : %d, Total size: %d\n%s \n", recvbytes, totalBytes, cache_buf);
+                                    fwrite(cache_buf, sizeof(char), recvbytes, outfile);
+                                    if( strstr(cache_buf, endFlags) )
+                                        break;
+                                    memset(cache_buf, 0, sizeof(cache_buf));
+                                }
+                                fwrite(cache_buf, sizeof(char), recvbytes, outfile);
+
+                                fclose(outfile);
                                 printDir(sockfd, rootcwd, uri_buf);
                                 close(sockfd);
                                 FD_CLR(sockfd, &allset);
                                 client[i] = -1;
+                                printf(" %d fd is leaving\n", sockfd);
                                 break;
-                            case FILE_NOT_FOUND:
-                                if ((deteleFiles(sockfd, rootcwd, uri_buf)  != 0)&&
-                                        (getRenameInfo(sockfd, rootcwd, uri_buf)!= 0))
-                                {
-                                    printf("file no found\n");
-                                }
-                                close(sockfd);
-                                FD_CLR(sockfd, &allset);
-                                client[i] = -1;
-                                break;
-                            case FILE_FORBIDEN:
-                                close(sockfd);
-                                FD_CLR(sockfd, &allset);
-                                client[i] = -1;
-                                break;
-                            default:
-                                break;
-                        }
+                            }
+                        default:
+                            break;
                     }
                 }
                 if(--nready <=0)
@@ -638,3 +693,85 @@ void * threadSendFile(void * args)
     close(fd);
     return pArgs;
 }
+
+struct RequestLine process_request_line(char * header_buf){
+    char * word;
+    struct RequestLine reqHead;
+    reqHead.method = -1;
+    reqHead.uri = NULL;
+    reqHead.version = -1;
+
+
+    //Process Method
+    word = strtok(header_buf, SEPCHARS);
+    if( !strcmp(word, "GET") ){
+        reqHead.method = GET;
+    }else if( !strcmp(word, "POST") ){
+        reqHead.method = POST;
+    }
+
+    //Process URI
+    reqHead.uri = strtok(NULL, SEPCHARS);
+
+    //Process Protocol
+    word = strtok(NULL, SEPCHARS);
+    if( strstr(word, "HTTP") ){
+        if( strstr(word, "1.1") )
+            reqHead.version = 11;
+        else if( strstr(word, "1.0") )
+            reqHead.version = 10;
+        else if( strstr(word, "0.9") )
+            reqHead.version = 9;
+    }
+
+    return reqHead;
+
+}
+
+struct UploadFileInfo process_request_head(){
+    char * word;
+    struct UploadFileInfo upFDInfo;
+    upFDInfo.contentLength = -1;
+    upFDInfo.boundary = NULL;
+    upFDInfo.contentType = NULL;
+
+    //Process Content-Length
+    word = strtok(NULL, SEPCHARS);
+    if( !strcmp(word, "Content-Length:") )
+    {
+        upFDInfo.contentLength = strtol(strtok(NULL, SEPCHARS), NULL, 10);
+        printf("Process_Request_Head: %s \n %d \n", word, upFDInfo.contentType);
+    }
+    else if( !strcmp(word, "Content-Type:") )
+    {
+        upFDInfo.contentType = strtok(NULL, SEPCHARS);
+        printf("Process_Request_Head: %s \n %s \n", word, upFDInfo.contentType);
+    }
+    else if( !strcmp(word, "boundary") )
+    {
+        upFDInfo.boundary = strtok(NULL, SEPCHARS);
+        printf("Process_Request_Head: %s \n %s \n", word, upFDInfo.boundary);
+    }
+
+    while( (word = strtok(NULL, SEPCHARS)) != NULL )
+    {
+        if( !strcmp(word, "Content-Length:") )
+        {
+            upFDInfo.contentLength = strtol(strtok(NULL, SEPCHARS), NULL, 10);
+            printf("Process_Request_Head: %s \n %d \n", word, upFDInfo.contentType);
+        }
+        else if( !strcmp(word, "Content-Type:") )
+        {
+            upFDInfo.contentType = strtok(NULL, SEPCHARS);
+            printf("Process_Request_Head: %s \n %s \n", word, upFDInfo.contentType);
+        }
+        else if( !strcmp(word, "boundary") )
+        {
+            upFDInfo.boundary = strtok(NULL, SEPCHARS);
+            printf("Process_Request_Head: %s \n %s \n", word, upFDInfo.boundary);
+        }
+    }
+
+    return upFDInfo;
+}
+
