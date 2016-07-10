@@ -130,7 +130,7 @@ long send_file(int fd, char * rootcwd, char * uri_buf, char * fileType)
     char path[MAX_LEN], filename[MAX_LEN];
     char *p;
     struct stat statbuf;
-    unsigned long filesize = -1;
+    unsigned long fileSize = -1;
     int src_file, read_length;
 
     strcpy(path, rootcwd);
@@ -141,13 +141,13 @@ long send_file(int fd, char * rootcwd, char * uri_buf, char * fileType)
     }
     else
     {
-        filesize = statbuf.st_size;
+        fileSize = statbuf.st_size;
     }
 
     sprintf(msg_head, "HTTP/1.1 200 OK\r\n");
     sprintf(msg_head, "%sServer: Web Server\r\n", msg_head);
     sprintf(msg_head, "%sContent-Type:%s\r\n", msg_head, fileType);
-    sprintf(msg_head, "%sContent-Length:%ld\r\n", msg_head, filesize);
+    sprintf(msg_head, "%sContent-Length:%ld\r\n", msg_head, fileSize);
     if (strstr(fileType, "application/octet-stream") || strstr(fileType, "text/plain"))
     {
         p = strtok(uri_buf, "/");
@@ -183,7 +183,7 @@ long send_file(int fd, char * rootcwd, char * uri_buf, char * fileType)
         }
     }
     close(src_file);
-    return filesize;
+    return fileSize;
 }
 
 int display_error(int fd, int error_no, char * uri_buf)
@@ -422,18 +422,21 @@ void waitingForClientSelectMax(int listenfd){
     }
 }
 
+fd_set allset;
+int client[FD_SETSIZE];
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
 //Using UNPv1 Select and thread
 void waitingForClientSelectSimple(int listenfd){
     struct sockaddr_in client_sockaddr;
     int fd, connfd;
-    fd_set allset, rset;
+    fd_set rset;
     int sin_size,recvbytes;
     int i, maxi, maxfd;
-    int nready, client[FD_SETSIZE];
+    int nready;
     char rootcwd[MAX_LEN], fileType[MAX_LEN], currentcwd[MAX_LEN];
-    char header_buf[BUFFER_SIZE],send_buf[BUFFER_SIZE],uri_buf[BUFFER_SIZE], cache_buf[BUFFER_SIZE];
+    char header_buf[BUFFER_SIZE*2],send_buf[BUFFER_SIZE],uri_buf[BUFFER_SIZE];
     int uri_status;
-    pthread_t tid;
     struct sendFileArgs args;
 
     maxfd = listenfd;
@@ -459,6 +462,9 @@ void waitingForClientSelectSimple(int listenfd){
 
         if(FD_ISSET(listenfd, &rset)){
             connfd = accept(listenfd, (struct sockaddr *) &client_sockaddr, &sin_size);
+
+            //Lock
+            pthread_mutex_lock(&lock);
             for(i=0; i<FD_SETSIZE; ++i) {
                 if(client[i]<0){
                     client[i] = connfd;
@@ -470,6 +476,8 @@ void waitingForClientSelectSimple(int listenfd){
                 exit(-1);
             }
             FD_SET(connfd, &allset);
+            pthread_mutex_unlock(&lock);
+
             if(connfd > maxfd)
                 maxfd = connfd;
             if(i > maxi)
@@ -484,24 +492,28 @@ void waitingForClientSelectSimple(int listenfd){
                 continue;
             }
             if(FD_ISSET(sockfd, &rset)){
-                if((recvbytes = recv(sockfd, &header_buf, BUFFER_SIZE, 0)) ==0){
+                if((recvbytes = recv(sockfd, &header_buf, BUFFER_SIZE*2, 0)) ==0){
+                    pthread_mutex_lock(&lock);
                     close(sockfd);
                     FD_CLR(sockfd, &allset);
                     client[i] = -1;
+                    pthread_mutex_unlock(&lock);
                     printf(" %d fd is leaving\n", sockfd);
                 }
                 else
                 {
-                    printf("\nHTTP header:\n%s \n", header_buf);
+                    printf("\nHeadRcvByte:%d\nHTTP header:\n%s\n", recvbytes, header_buf);
                     struct RequestLine reqHead = process_request_line(header_buf);
 
                     // Process Non-HTTP Protocol
                     if(reqHead.version == -1){
                         fprintf(stderr,"Not HTTP Protocol!\n");
+                        pthread_mutex_lock(&lock);
                         close(sockfd);
                         FD_CLR(sockfd, &allset);
                         client[i] = -1;
-                        exit(-1);
+                        pthread_mutex_unlock(&lock);
+                        continue;
                     }
 
                     //HTTP Protocol
@@ -516,9 +528,11 @@ void waitingForClientSelectSimple(int listenfd){
                             //暂时不考虑 favicon.ico
                             if(!strcmp(uri_buf, "/favicon.ico")){
                                 ///*[>Server 主动关闭链接<]*/
+                                pthread_mutex_lock(&lock);
                                 close(sockfd);
                                 FD_CLR(sockfd, &allset);
                                 client[i] = -1;
+                                pthread_mutex_unlock(&lock);
                                 continue;
                             }
 
@@ -530,12 +544,16 @@ void waitingForClientSelectSimple(int listenfd){
                                     {
                                         get_fileType(uri_buf, fileType);
                                         args.fd = sockfd;
-                                        args.rootcwd = rootcwd;
-                                        args.uri_buf = uri_buf;
-                                        args.fileType = fileType;
+                                        strncpy(args.rootcwd, rootcwd, strlen(rootcwd));
+                                        strncpy(args.uri_buf, uri_buf, strlen(uri_buf));
+                                        strncpy(args.fileType, fileType, strlen(fileType));
+                                        pthread_t tid;
+                                        args.clientIndex = i;
                                         pthread_create(&tid, NULL, threadSendFile, &args);
+                                        pthread_mutex_lock(&lock);
                                         FD_CLR(sockfd, &allset);
                                         client[i] = -1;
+                                        pthread_mutex_unlock(&lock);
                                         break;
                                     }
 
@@ -543,9 +561,11 @@ void waitingForClientSelectSimple(int listenfd){
                                     {
                                         //   [>display_dir(sockfd, rootcwd, currentcwd, uri_buf);<]
                                         printDir(sockfd, rootcwd, uri_buf);
+                                        pthread_mutex_lock(&lock);
                                         close(sockfd);
                                         FD_CLR(sockfd, &allset);
                                         client[i] = -1;
+                                        pthread_mutex_unlock(&lock);
                                         break;
                                     }
                                 case FILE_NOT_FOUND:
@@ -555,55 +575,43 @@ void waitingForClientSelectSimple(int listenfd){
                                         {
                                             printf("file no found\n");
                                         }
+                                        pthread_mutex_lock(&lock);
                                         close(sockfd);
                                         FD_CLR(sockfd, &allset);
                                         client[i] = -1;
+                                        pthread_mutex_unlock(&lock);
                                         break;
                                     }
                                 case FILE_FORBIDEN:
                                     {
+                                        pthread_mutex_lock(&lock);
                                         close(sockfd);
                                         FD_CLR(sockfd, &allset);
                                         client[i] = -1;
+                                        pthread_mutex_unlock(&lock);
                                         break;
                                     }
                                 default:
                                     break;
                             }
-
                             break;
                         case POST:
                             {
-                                FILE * outfile;
-                                int totalBytes = 0;
-                                char endFlags[BUFFER_SIZE] = {'-','-'};
-                                memset(cache_buf, 0, sizeof(cache_buf));
-                                struct UploadFileInfo upFDInfo = process_request_head();
 
-                                outfile = fopen("./tmp", "w+b");
+                                struct uploadArgs args;
+                                args.sockfd = sockfd;
+                                args.recvbytes = recvbytes;
+                                args.clientIndex = i;
+                                strncpy(args.header_buf, header_buf, sizeof(header_buf));
+                                strncpy(args.rootcwd, rootcwd, sizeof(rootcwd));
+                                strncpy(args.uri_buf, uri_buf, sizeof(uri_buf));
 
-                                //construct end flags
-                                strcat(endFlags, upFDInfo.boundary);
-                                strcat(endFlags, "--");
-
-                                printf("End Signal: %s \n", endFlags);
-
-                                while( (recvbytes = recv(sockfd, &cache_buf, BUFFER_SIZE, 0)) != 0
-                                        && (totalBytes += recvbytes) < upFDInfo.contentLength ){
-                                    printf("This Segment size : %d, Total size: %d\n%s \n", recvbytes, totalBytes, cache_buf);
-                                    fwrite(cache_buf, sizeof(char), recvbytes, outfile);
-                                    if( strstr(cache_buf, endFlags) )
-                                        break;
-                                    memset(cache_buf, 0, sizeof(cache_buf));
-                                }
-                                fwrite(cache_buf, sizeof(char), recvbytes, outfile);
-
-                                fclose(outfile);
-                                printDir(sockfd, rootcwd, uri_buf);
-                                close(sockfd);
+                                pthread_t tid;
+                                pthread_create(&tid, NULL, threadUpload, &args);
+                                pthread_mutex_lock(&lock);
                                 FD_CLR(sockfd, &allset);
                                 client[i] = -1;
-                                printf(" %d fd is leaving\n", sockfd);
+                                pthread_mutex_unlock(&lock);
                                 break;
                             }
                         default:
@@ -626,7 +634,7 @@ void * threadSendFile(void * args)
     char path[MAX_LEN], filename[MAX_LEN];
     char *p;
     struct stat statbuf;
-    long long filesize = -1;
+    long long fileSize = -1;
     int src_file, read_length;
 
     struct sendFileArgs * pArgs  = (struct sendFileArgs *) args;
@@ -637,7 +645,7 @@ void * threadSendFile(void * args)
     rootcwd = pArgs->rootcwd;
     uri_buf = pArgs->uri_buf;
     fileType = pArgs->fileType;
-    pArgs->filesize = filesize;
+    pArgs->fileSize = fileSize;
 
     strcpy(path, rootcwd);
     strcat(path, uri_buf);
@@ -647,13 +655,13 @@ void * threadSendFile(void * args)
     }
     else
     {
-        filesize = statbuf.st_size;
+        fileSize = statbuf.st_size;
     }
 
     sprintf(msg_head, "HTTP/1.1 200 OK\r\n");
     sprintf(msg_head, "%sServer: Web Server\r\n", msg_head);
     sprintf(msg_head, "%sContent-Type:%s\r\n", msg_head, fileType);
-    sprintf(msg_head, "%sContent-Length:%ld\r\n", msg_head, filesize);
+    sprintf(msg_head, "%sContent-Length:%ld\r\n", msg_head, fileSize);
     if (strstr(fileType, "application/octet-stream") || strstr(fileType, "text/plain"))
     {
         p = strtok(uri_buf, "/");
@@ -689,21 +697,137 @@ void * threadSendFile(void * args)
         }
     }
     close(src_file);
-    pArgs->filesize = filesize;
+    pArgs->fileSize = fileSize;
+
     close(fd);
+    printf(" %d fd is leaving\n", fd);
+
     return pArgs;
+}
+
+void * threadUpload( void * args )
+{
+    FILE * outfile;
+    long long totalRcvdBytes = 0, fileSize = 0;
+    char * ptrChar, filePath[BUFFER_SIZE] = {"./"};
+    char endFlags[BUFFER_SIZE] = {"--"};
+    char sepFlags[BUFFER_SIZE] = {"--"};
+    char postHead[BUFFER_SIZE * 2] = { 0 };
+    char body_header[BUFFER_SIZE] = { 0 };
+    char cache_buf[BUFFER_SIZE] = { 0 };
+    int i, bodyHeadSize, requestHeadSize, endSize;
+    struct uploadArgs * pArgs = (struct uploadArgs *) args;
+    int sockfd = pArgs->sockfd;
+    int recvbytes = pArgs->recvbytes;
+    char header_buf[BUFFER_SIZE*2];
+    char rootcwd[BUFFER_SIZE];
+    char uri_buf[BUFFER_SIZE];
+
+    strncpy(header_buf, pArgs->header_buf, sizeof(pArgs->header_buf));
+    strncpy(rootcwd, pArgs->rootcwd, sizeof(pArgs->rootcwd));
+    strncpy(uri_buf, pArgs->uri_buf, sizeof(pArgs->uri_buf));
+
+
+    //Construct End flags
+    struct UploadFileInfo upFDInfo = process_request_head(header_buf);
+    strcat(endFlags, upFDInfo.boundary);
+    strcat(sepFlags, upFDInfo.boundary);
+    strcat(endFlags, "--");
+    endSize = strlen(endFlags)+4;
+
+    //如果header_buf不包含body部分
+    if(recvbytes < BUFFER_SIZE*2 && !strstr(header_buf, endFlags)){
+        /*memset(body_header, 0, sizeof(body_header));*/
+        recvbytes = recv(sockfd, &body_header, BUFFER_SIZE, 0);
+
+        requestHeadSize = 0;
+
+        ptrChar = body_header;
+
+        for(i=0; i<recvbytes-4; i++){
+            if(ptrChar[i] == '\r' && ptrChar[i+1] == '\n'
+                    && ptrChar[i+2] == '\r' && ptrChar[i+3] == '\n')
+                break;
+        }
+        bodyHeadSize = i+4;
+    }
+    //如果header_buf包含body部分
+    else{
+
+        ptrChar = header_buf;
+
+        //Find first \r\n\r\n
+        for(i=0; i<recvbytes-4; i++){
+            if(ptrChar[i] == '\r' && ptrChar[i+1] == '\n'
+                    && ptrChar[i+2] == '\r' && ptrChar[i+3] == '\n')
+                break;
+        }
+        requestHeadSize = i+4;
+        for(i = i+4; i<recvbytes-4; i++){
+            if(ptrChar[i] == '\r' && ptrChar[i+1] == '\n'
+                    && ptrChar[i+2] == '\r' && ptrChar[i+3] == '\n')
+                break;
+        }
+
+        bodyHeadSize = i+4-requestHeadSize;
+    }
+
+    struct BodyInfo body_info = get_fileName(ptrChar+requestHeadSize);
+    if( strlen(body_info.filename)  ){
+
+        strcat(filePath, body_info.filename);
+        outfile = fopen(filePath, "wb");
+
+        //Receive Post Head Info
+        fileSize = upFDInfo.contentLength - bodyHeadSize - endSize;
+        totalRcvdBytes += recvbytes - bodyHeadSize - requestHeadSize;
+
+        /*printf("%s\n", ptrChar);*/
+        //若文件小于2K
+        if(totalRcvdBytes >= fileSize){
+            fwrite(ptrChar+(bodyHeadSize+requestHeadSize),
+                    sizeof(char), fileSize, outfile);
+        }
+        //若文件大于2K
+        else
+        {
+            fwrite(ptrChar+(bodyHeadSize+requestHeadSize),
+                    sizeof(char), totalRcvdBytes, outfile);
+            while( (recvbytes = recv(sockfd, &cache_buf, BUFFER_SIZE, 0)) != 0 )
+            {
+                if( (totalRcvdBytes += recvbytes)  < fileSize)
+                {
+                    fwrite(cache_buf, sizeof(char),
+                            recvbytes, outfile);
+                }
+                else {
+                    fwrite(cache_buf, sizeof(char),
+                            recvbytes-(totalRcvdBytes-fileSize), outfile);
+                    break;
+                }
+                memset(cache_buf, 0, sizeof(cache_buf));
+            }
+        }
+        fclose(outfile);
+    }
+
+    printDir(sockfd, rootcwd, uri_buf);
+    close(sockfd);
+
+    printf(" %d fd is leaving\n", sockfd);
 }
 
 struct RequestLine process_request_line(char * header_buf){
     char * word;
+    char tmpBuf[BUFFER_SIZE * 2];
     struct RequestLine reqHead;
     reqHead.method = -1;
-    reqHead.uri = NULL;
+    memset(reqHead.uri, 0, sizeof(reqHead.uri));
     reqHead.version = -1;
-
+    strncpy(tmpBuf, header_buf, BUFFER_SIZE*2);
 
     //Process Method
-    word = strtok(header_buf, SEPCHARS);
+    word = strtok(tmpBuf, SEPCHARS);
     if( !strcmp(word, "GET") ){
         reqHead.method = GET;
     }else if( !strcmp(word, "POST") ){
@@ -711,7 +835,8 @@ struct RequestLine process_request_line(char * header_buf){
     }
 
     //Process URI
-    reqHead.uri = strtok(NULL, SEPCHARS);
+    word = strtok(NULL, SEPCHARS);
+    strncpy(reqHead.uri, word, strlen(word));
 
     //Process Protocol
     word = strtok(NULL, SEPCHARS);
@@ -728,50 +853,81 @@ struct RequestLine process_request_line(char * header_buf){
 
 }
 
-struct UploadFileInfo process_request_head(){
+struct UploadFileInfo process_request_head( char * header_buf ){
     char * word;
     struct UploadFileInfo upFDInfo;
+    char tmpBuf[BUFFER_SIZE*2];
     upFDInfo.contentLength = -1;
-    upFDInfo.boundary = NULL;
-    upFDInfo.contentType = NULL;
+    memset(upFDInfo.boundary, 0, sizeof(upFDInfo.boundary));
+    memset(upFDInfo.contentType, 0, sizeof(upFDInfo.contentType));
+    strncpy( tmpBuf, header_buf, BUFFER_SIZE*2 );
 
     //Process Content-Length
-    word = strtok(NULL, SEPCHARS);
+    word = strtok(tmpBuf, SEPCHARS);
     if( !strcmp(word, "Content-Length:") )
     {
-        upFDInfo.contentLength = strtol(strtok(NULL, SEPCHARS), NULL, 10);
-        printf("Process_Request_Head: %s \n %d \n", word, upFDInfo.contentType);
+        upFDInfo.contentLength = strtoll(strtok(NULL, SEPCHARS), NULL, 10);
     }
     else if( !strcmp(word, "Content-Type:") )
     {
-        upFDInfo.contentType = strtok(NULL, SEPCHARS);
-        printf("Process_Request_Head: %s \n %s \n", word, upFDInfo.contentType);
+        word = strtok(NULL, SEPCHARS);
+        strncpy(upFDInfo.contentType, word, strlen(word));
+        /*upFDInfo.contentType = strtok(NULL, SEPCHARS);*/
     }
     else if( !strcmp(word, "boundary") )
     {
-        upFDInfo.boundary = strtok(NULL, SEPCHARS);
-        printf("Process_Request_Head: %s \n %s \n", word, upFDInfo.boundary);
+        word = strtok(NULL, SEPCHARS);
+        strncpy(upFDInfo.boundary, word, strlen(word));
+        /*upFDInfo.boundary = strtok(NULL, SEPCHARS);*/
     }
 
     while( (word = strtok(NULL, SEPCHARS)) != NULL )
     {
         if( !strcmp(word, "Content-Length:") )
         {
-            upFDInfo.contentLength = strtol(strtok(NULL, SEPCHARS), NULL, 10);
-            printf("Process_Request_Head: %s \n %d \n", word, upFDInfo.contentType);
+            upFDInfo.contentLength = strtoll(strtok(NULL, SEPCHARS), NULL, 10);
         }
         else if( !strcmp(word, "Content-Type:") )
         {
-            upFDInfo.contentType = strtok(NULL, SEPCHARS);
-            printf("Process_Request_Head: %s \n %s \n", word, upFDInfo.contentType);
+            word = strtok(NULL, SEPCHARS);
+            strncpy(upFDInfo.contentType, word, strlen(word));
+            /*upFDInfo.contentType = strtok(NULL, SEPCHARS);*/
         }
         else if( !strcmp(word, "boundary") )
         {
-            upFDInfo.boundary = strtok(NULL, SEPCHARS);
-            printf("Process_Request_Head: %s \n %s \n", word, upFDInfo.boundary);
+            word = strtok(NULL, SEPCHARS);
+            strncpy(upFDInfo.boundary, word, strlen(word));
+            /*upFDInfo.boundary = strtok(NULL, SEPCHARS);*/
         }
     }
 
     return upFDInfo;
 }
 
+struct BodyInfo get_fileName( char * body_header ){
+    char * word;
+    struct BodyInfo body_info;
+    memset(body_info.filename, 0, sizeof(body_info.filename));
+    char tmpBuf[BUFFER_SIZE];
+    strncpy( tmpBuf, body_header, BUFFER_SIZE );
+
+    word = strtok( tmpBuf, SEPCHARS );
+
+    while( (word = strtok(NULL, SEPCHARS)) != NULL ){
+        if( !strcmp(word, "filename") )
+        {
+            word = strtok(NULL, SEPCHARS);
+            if( !strcmp(word, "Content-Type:") )
+            {
+                break;
+            }
+            strncpy( body_info.filename, word, strlen(word) );
+            while( strcmp(word = strtok(NULL, SEPCHARS), "Content-Type:") ){
+                strcat( body_info.filename, " " );
+                strcat( body_info.filename, word );
+            }
+            break;
+        }
+    }
+    return body_info;
+}

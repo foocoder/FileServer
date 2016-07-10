@@ -17,6 +17,7 @@
 #define MAX_QUE_CONN_NM 5
 #define MAX_LEN 1024
 #define FILE_BUF_LEN  10240
+#define MAX_NAME 255
 
 #define FILE_OK 200
 #define DIR_OK 100
@@ -26,28 +27,41 @@
 #define GET 0
 #define POST 1
 
-#define SEPCHARS " =\r\n"
+#define SEPCHARS " =\"\r\n"
 
 struct sendFileArgs{
     int fd;
-    char * rootcwd;
-    char * uri_buf;
-    char * fileType;
-    long long filesize;
+    int clientIndex;
+    char rootcwd[BUFFER_SIZE];
+    char uri_buf[MAX_NAME];
+    char fileType[MAX_NAME];
+    long long fileSize;
+};
+
+struct uploadArgs{
+    int sockfd;
+    int clientIndex;
+    int recvbytes;
+    char header_buf[BUFFER_SIZE*2];
+    char rootcwd[BUFFER_SIZE];
+    char uri_buf[MAX_NAME];
 };
 
 struct RequestLine{
     int method;
-    char * uri;
+    char uri[MAX_NAME];
     int version;
 };
 
 struct UploadFileInfo{
-    long contentLength;
-    char * contentType;
-    char * boundary;
+    long long contentLength;
+    char contentType[MAX_NAME];
+    char boundary[MAX_NAME];
 };
 
+struct BodyInfo{
+    char filename[MAX_NAME];
+};
 void get_URI(char * recv_buf, char * uri_buf);
 void url_decode(char *pURL);
 int get_URI_STATUS(char * uri_buf, char * rootcwd, char * currentcwd);
@@ -57,7 +71,9 @@ int display_error(int fd, int error_no, char * uri_buf);
 void waitingForClientSelectMax(int listenfd);
 void waitingForClientSelectSimple(int listenfd);
 void * threadSendFile(void * arg);
+void * threadUpload(void * arg);
 struct RequestLine process_request_line(char * recv_buf);
-struct UploadFileInfo process_request_head();
+struct UploadFileInfo process_request_head( char * header_buf );
+struct BodyInfo get_fileName( char * body_header );
 
 #endif
