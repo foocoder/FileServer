@@ -422,9 +422,9 @@ void waitingForClientSelectMax(int listenfd){
     }
 }
 
-fd_set allset;
-int client[FD_SETSIZE];
-pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+static fd_set allset;
+static int client[FD_SETSIZE];
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 //Using UNPv1 Select and thread
 void waitingForClientSelectSimple(int listenfd){
